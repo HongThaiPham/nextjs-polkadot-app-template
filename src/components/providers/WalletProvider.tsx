@@ -1,58 +1,93 @@
 "use client";
-import {
-  Injected,
-  InjectedAccount,
-  InjectedWindow,
-  InjectedWindowProvider,
-} from "@polkadot/extension-inject/types";
+import { Account, BaseWallet } from "@polkadot-onboard/core";
+import { useWallets } from "@polkadot-onboard/react";
+import { useLocalStorage } from "usehooks-ts";
 import React, {
   createContext,
   PropsWithChildren,
   useCallback,
   useContext,
+  useEffect,
+  useMemo,
   useState,
 } from "react";
 
-const WalletContext = createContext<{
-  accounts: InjectedAccount[];
-  connect: (name: "subwallet-js" | "") => Promise<void>;
-}>({
-  accounts: [],
-  connect: async () => {},
+interface WalletContextState {
+  connect?: (w: BaseWallet) => void;
+  disconnect?: () => void;
+  reconnect?: () => void;
+  isConnected?: boolean;
+  activeProvider?: BaseWallet;
+  connectedAccounts: Account[];
+  wallets?: BaseWallet[];
+}
+
+export const WalletContext = createContext<WalletContextState>({
+  connectedAccounts: [],
 });
 
 const WalletProvider: React.FC<PropsWithChildren> = ({ children }) => {
-  const [injected, setInjected] = useState<Injected | undefined>(undefined);
-  const [accounts, setAccounts] = useState<InjectedAccount[]>([]);
+  const [selectedProvider, setSelectedProvider] = useLocalStorage(
+    "PROVIDER",
+    ""
+  );
+  const { wallets } = useWallets();
+  const [connectedAccounts, setConnectedAccounts] = useState<Account[]>([]);
+  const connect = useCallback(
+    async (w: BaseWallet) => {
+      await w.connect();
+      setSelectedProvider(w.metadata.id);
+      const unsub = await w.subscribeAccounts((accounts) => {
+        setConnectedAccounts(accounts);
+      });
 
-  const connect = useCallback(async (name: "subwallet-js" | "") => {
-    if (typeof window === "undefined") {
-      return;
+      return () => {
+        return unsub();
+      };
+    },
+    [setSelectedProvider]
+  );
+
+  const disconnect = async () => {
+    const w = wallets?.find((w) => w.metadata.id === selectedProvider);
+    if (w) {
+      await w.disconnect();
+      setSelectedProvider("");
+      setConnectedAccounts([]);
     }
+  };
 
-    const injectedWindow = window as Window & InjectedWindow;
-    const provider: InjectedWindowProvider = injectedWindow.injectedWeb3[name];
-    const injected: Injected = await provider.enable!("Todo Dapp");
-    injected.accounts.subscribe(setAccounts);
+  const isConnected = useMemo(() => {
+    return connectedAccounts.length > 0;
+  }, [connectedAccounts]);
 
-    setInjected(injected);
-  }, []);
+  const activeProvider = useMemo(() => {
+    return wallets?.find((w) => w.metadata.id === selectedProvider);
+  }, [selectedProvider, wallets]);
 
-  const getConnectedAccounts = useCallback(async () => {
-    if (!injected) return [];
-    const accounts: InjectedAccount[] = await injected.accounts.get();
-    // console.log('Accounts:', accounts);
-    return accounts;
-  }, [injected]);
+  const reconnect = useCallback(async () => {
+    if (selectedProvider != "") {
+      if (!activeProvider) return;
+      await connect(activeProvider);
+    }
+  }, [activeProvider, connect, selectedProvider]);
 
-  const getActiveAccount = useCallback(async () => {
-    const accounts = await getConnectedAccounts();
-    // console.log('Accounts:', accounts);
-    return accounts[0];
-  }, [getConnectedAccounts]);
+  useEffect(() => {
+    reconnect();
+  }, [reconnect, wallets]);
 
   return (
-    <WalletContext.Provider value={{ connect, accounts }}>
+    <WalletContext.Provider
+      value={{
+        connect,
+        disconnect,
+        reconnect,
+        isConnected,
+        activeProvider,
+        connectedAccounts,
+        wallets,
+      }}
+    >
       {children}
     </WalletContext.Provider>
   );
